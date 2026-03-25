@@ -18,7 +18,7 @@ Testing: Postman
 
 1. Склонируйте репозиторий:
    ```bash
-   git clone [https://github.com/твой-логин/court-registry-api.git](https://github.com/твой-логин/court-registry-api.git)
+   git clone https://github.com/ashleyrossmithh/sud.git
 2. Соберите проект mvn clean install
 3. Запустите приложение mvn spring-boot:run
 
