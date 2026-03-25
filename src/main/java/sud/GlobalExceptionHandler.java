@@ -8,67 +8,56 @@ import org.springframework.web.bind.annotation.ControllerAdvice;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.context.request.WebRequest;
 
-import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.Map;
 
 @ControllerAdvice
 public class GlobalExceptionHandler {
 
+    // 1. Ошибка 404 (Суд не найден)
     @ExceptionHandler(ResourceNotFoundException.class)
     public ResponseEntity<?> handleNotFound(ResourceNotFoundException ex, WebRequest request) {
-        Map<String, Object> body = createErrorBody(HttpStatus.NOT_FOUND, ex.getMessage());
-        return new ResponseEntity<>(body, HttpStatus.NOT_FOUND);
+        return buildErrorResponse(HttpStatus.NOT_FOUND, ex.getMessage(), request);
     }
 
-    @ExceptionHandler(MethodArgumentNotValidException.class)
-    public ResponseEntity<?> handleValidation(MethodArgumentNotValidException ex) {
-        Map<String, String> errors = new HashMap<>();
-        ex.getBindingResult().getFieldErrors().forEach(error ->
-                errors.put(error.getField(), error.getDefaultMessage()));
-
-        Map<String, Object> body = createErrorBody(HttpStatus.UNPROCESSABLE_ENTITY, "Validation Failed");
-        body.put("details", errors);
-        return new ResponseEntity<>(body, HttpStatus.UNPROCESSABLE_ENTITY);
+    // 2. Ошибка 405 (Не тот метод, например POST вместо GET)
+    @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
+    public ResponseEntity<?> handleMethodNotSupported(HttpRequestMethodNotSupportedException ex, WebRequest request) {
+        return buildErrorResponse(HttpStatus.METHOD_NOT_ALLOWED, ex.getMessage(), request);
     }
 
+    // 3. Ошибка 422 (Ошибки валидации или бизнес-логики)
+    @ExceptionHandler({MethodArgumentNotValidException.class, IllegalArgumentException.class})
+    public ResponseEntity<?> handleValidationAndLogic(Exception ex, WebRequest request) {
+        String message = (ex instanceof MethodArgumentNotValidException) ? "Ошибка валидации данных" : ex.getMessage();
+        return buildErrorResponse(HttpStatus.UNPROCESSABLE_ENTITY, message, request);
+    }
+
+    // 4. Глобальная ошибка 500 (Если всё сломалось)
     @ExceptionHandler(Exception.class)
     public ResponseEntity<?> handleGlobalException(Exception ex, WebRequest request) {
-        // Теперь мы ТОЧНО увидим ошибку в логах
-        ex.printStackTrace();
-
-        Map<String, Object> body = createErrorBody(HttpStatus.INTERNAL_SERVER_ERROR, ex.getMessage());
-        body.put("exception_type", ex.getClass().getSimpleName());
-        return new ResponseEntity<>(body, HttpStatus.INTERNAL_SERVER_ERROR);
+        ex.printStackTrace(); // Чтобы видеть причину в консоли
+        return buildErrorResponse(HttpStatus.INTERNAL_SERVER_ERROR, "Внутренняя ошибка сервера: " + ex.getMessage(), request);
     }
 
-    private Map<String, Object> createErrorBody(HttpStatus status, String message) {
+    private ResponseEntity<Map<String, Object>> buildErrorResponse(HttpStatus status, String message, WebRequest request) {
+        Map<String, Object> errorDetails = new HashMap<>();
+        errorDetails.put("code", status.value());
+        errorDetails.put("message", message);
+
+        // Достаем чистый путь запроса (например, /api/entities/court/132)
+        String path = request.getDescription(false).replace("uri=", "");
+        errorDetails.put("path", path);
+
         Map<String, Object> body = new HashMap<>();
-        body.put("timestamp", LocalDateTime.now());
-        body.put("status", status.value());
-        body.put("error", status.getReasonPhrase());
-        body.put("message", message);
-        return body;
+        body.put("error", errorDetails);
+
+        return new ResponseEntity<>(body, status);
     }
-    @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
-    public ResponseEntity<?> handleMethodNotSupported(HttpRequestMethodNotSupportedException ex) {
-        Map<String, Object> body = createErrorBody(HttpStatus.METHOD_NOT_ALLOWED, ex.getMessage());
-        body.put("exception_type", ex.getClass().getSimpleName());
-
-        // Возвращаем статус 405 METHOD_NOT_ALLOWED
-        return new ResponseEntity<>(body, HttpStatus.METHOD_NOT_ALLOWED);
-    }
-    @ExceptionHandler(IllegalArgumentException.class)
-    public ResponseEntity<?> handleIllegalArgument(IllegalArgumentException ex) {
-        // Формируем тело ошибки со статусом 422
-        Map<String, Object> body = createErrorBody(HttpStatus.UNPROCESSABLE_ENTITY, ex.getMessage());
-        body.put("exception_type", ex.getClass().getSimpleName());
-
-        // Если хочешь добавить детали, как мы обсуждали:
-        Map<String, String> details = new HashMap<>();
-        details.put("error_detail", "Нарушение бизнес-логики или пустые поля");
-        body.put("details", details);
-
-        return new ResponseEntity<>(body, HttpStatus.UNPROCESSABLE_ENTITY);
+    @ExceptionHandler(org.springframework.http.converter.HttpMessageNotReadableException.class)
+    public ResponseEntity<?> handleBadRequest(org.springframework.http.converter.HttpMessageNotReadableException ex, WebRequest request) {
+        // Вытаскиваем только суть ошибки, без лишнего мусора
+        String cleanMessage = "Ошибка синтаксиса JSON: проверьте запятые и кавычки";
+        return buildErrorResponse(HttpStatus.BAD_REQUEST, cleanMessage, request);
     }
 }

@@ -8,6 +8,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
+import sud.ResourceNotFoundException;
 import sud.core.rest.support.CanCompleteResource;
 import sud.core.rest.support.CanUpdateResource;
 import sud.domain.court.Court;
@@ -20,7 +21,6 @@ import sud.excel.ExportService;
 
 import java.net.URISyntaxException;
 import java.util.List;
-import java.util.Optional;
 
 import static org.springframework.http.MediaType.APPLICATION_JSON_VALUE;
 import static org.springframework.web.bind.annotation.RequestMethod.DELETE;
@@ -56,9 +56,7 @@ public class CourtResource implements CanUpdateResource<CourtDTO, CourtDTOServic
     @PostMapping(value = {"", "/"}, produces = APPLICATION_JSON_VALUE)
     public ResponseEntity<CourtDTO> create(@RequestBody CourtDTO courtDTO) throws URISyntaxException {
         log.info("REST request to save Court via POST : {}", courtDTO);
-
         validateCourt(courtDTO);
-
         CourtDTO result = getDTOService().save(courtDTO);
         return new ResponseEntity<>(result, HttpStatus.CREATED);
     }
@@ -67,11 +65,10 @@ public class CourtResource implements CanUpdateResource<CourtDTO, CourtDTOServic
     @Transactional
     public ResponseEntity<CourtDTO> update(@PathVariable Long id, @RequestBody CourtDTO courtDTO) {
         log.info("REST request to update Court via PUT : {}, id: {}", courtDTO, id);
-
         validateCourt(courtDTO);
 
         Court entity = courtRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Court not found"));
+                .orElseThrow(() -> new ResourceNotFoundException("Суд с id " + id + " не найден"));
 
         entity.setShortName(courtDTO.getShortName());
         entity.setFullName(courtDTO.getFullName());
@@ -81,20 +78,57 @@ public class CourtResource implements CanUpdateResource<CourtDTO, CourtDTOServic
         entity.setCourtType(courtDTO.getCourtType());
 
         Court saved = courtRepository.save(entity);
+        CourtDTO result = courtDTOService.findOne(saved.getId());
+        return ResponseEntity.ok(result);
+    }
 
+    // --- ОБНОВЛЕННЫЙ ПАТЧ ТУТ ---
+    @PatchMapping(value = "/{id:.+}", produces = APPLICATION_JSON_VALUE)
+    @Transactional
+    public ResponseEntity<CourtDTO> partialUpdate(@PathVariable Long id, @RequestBody CourtDTO courtDTO) {
+        log.info("REST request to partial update Court via PATCH : {}, id: {}", courtDTO, id);
+
+        // 1. Находим существующий суд
+        Court entity = courtRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Суд с id " + id + " не найден для обновления"));
+
+        // 2. Обновляем только те поля, которые не null в запросе
+        if (courtDTO.getShortName() != null) {
+            if (courtDTO.getShortName().isBlank()) throw new IllegalArgumentException("shortName не может быть пустым");
+            entity.setShortName(courtDTO.getShortName());
+        }
+        if (courtDTO.getFullName() != null) {
+            if (courtDTO.getFullName().isBlank()) throw new IllegalArgumentException("fullName не может быть пустым");
+            entity.setFullName(courtDTO.getFullName());
+        }
+        if (courtDTO.getAddress() != null) {
+            if (courtDTO.getAddress().isBlank()) throw new IllegalArgumentException("address не может быть пустым");
+            entity.setAddress(courtDTO.getAddress());
+        }
+        if (courtDTO.getTelNumber() != null) {
+            if (courtDTO.getTelNumber().length() > 20) throw new IllegalArgumentException("Слишком длинный номер телефона");
+            entity.setTelNumber(courtDTO.getTelNumber());
+        }
+        if (courtDTO.getSite() != null) {
+            entity.setSite(courtDTO.getSite());
+        }
+        if (courtDTO.getCourtType() != null) {
+            entity.setCourtType(courtDTO.getCourtType());
+        }
+
+        // 3. Сохраняем изменения
+        Court saved = courtRepository.save(entity);
         CourtDTO result = courtDTOService.findOne(saved.getId());
 
         return ResponseEntity.ok(result);
     }
 
-    @PatchMapping(value = "/{id:.+}", produces = APPLICATION_JSON_VALUE)
-    public ResponseEntity<CourtDTO> partialUpdate(@PathVariable Long id, @RequestBody CourtDTO courtDTO) {
-        return update(id, courtDTO);
-    }
-
     @RequestMapping(value = "/{id:.+}", method = DELETE, produces = APPLICATION_JSON_VALUE)
     public ResponseEntity<Void> delete(@PathVariable Long id) throws URISyntaxException {
         log.debug("Delete by id Court : {}", id);
+        if (!courtRepository.existsById(id)) {
+            throw new ResourceNotFoundException("Невозможно удалить: суд с id " + id + " не найден");
+        }
         getDTOService().deleteById(id);
         return ResponseEntity.ok().build();
     }
@@ -102,9 +136,13 @@ public class CourtResource implements CanUpdateResource<CourtDTO, CourtDTOServic
     @RequestMapping(value = "/{id:.+}", method = GET, produces = APPLICATION_JSON_VALUE)
     public ResponseEntity<CourtDTO> findById(@PathVariable Long id) throws URISyntaxException {
         log.debug("Find by id CourtDTO : {}", id);
-        return Optional.ofNullable(getDTOService().findOne(id))
-                .map(dtoItem -> new ResponseEntity<>(dtoItem, HttpStatus.OK))
-                .orElse(new ResponseEntity<>(HttpStatus.NOT_FOUND));
+
+        CourtDTO dto = getDTOService().findOne(id);
+        if (dto == null) {
+            throw new ResourceNotFoundException("Суд с id " + id + " не найден");
+        }
+
+        return new ResponseEntity<>(dto, HttpStatus.OK);
     }
 
     @RequestMapping(value = "/createCourtPersonLink", method = RequestMethod.POST, produces = APPLICATION_JSON_VALUE)
@@ -139,8 +177,6 @@ public class CourtResource implements CanUpdateResource<CourtDTO, CourtDTOServic
             workbook.write(out);
             byte[] content = out.toByteArray();
 
-            log.info("<<< ФАЙЛ СФОРМИРОВАН: {} байт", content.length);
-
             return ResponseEntity.ok()
                     .contentType(MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
                     .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"courts.xlsx\"")
@@ -157,25 +193,20 @@ public class CourtResource implements CanUpdateResource<CourtDTO, CourtDTOServic
         if (dto == null) {
             throw new IllegalArgumentException("Тело запроса пустое");
         }
-
         if (dto.getShortName() == null || dto.getShortName().isBlank()) {
-            throw new IllegalArgumentException("shortName обязателен");
+            throw new IllegalArgumentException("Поле 'Название' (shortName) обязательно для заполнения");
         }
-
         if (dto.getFullName() == null || dto.getFullName().isBlank()) {
-            throw new IllegalArgumentException("fullName обязателен");
+            throw new IllegalArgumentException("Поле 'Полное название' (fullName) обязательно для заполнения");
         }
-
         if (dto.getAddress() == null || dto.getAddress().isBlank()) {
-            throw new IllegalArgumentException("address обязателен");
+            throw new IllegalArgumentException("Поле 'Адрес' обязательно для заполнения");
         }
-
         if (dto.getCourtType() == null) {
-            throw new IllegalArgumentException("courtType обязателен");
+            throw new IllegalArgumentException("Тип суда (courtType) обязателен");
         }
-
         if (dto.getTelNumber() != null && dto.getTelNumber().length() > 20) {
-            throw new IllegalArgumentException("Слишком длинный номер телефона");
+            throw new IllegalArgumentException("Слишком длинный номер телефона (макс. 20 символов)");
         }
     }
 }
